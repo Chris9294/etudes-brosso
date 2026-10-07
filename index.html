@@ -5,6 +5,7 @@
 <title>Répartition des études</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="github-config.js"></script>
 
 <!-- PWA meta -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -32,9 +33,27 @@ select { padding:6px; font-size:14px; }
 button { padding:12px 20px; background:#1e88e5; color:white; border:none; border-radius:8px; cursor:pointer; font-size:16px; margin:5px 0; width:100%; transition:0.2s;}
 button:hover { background:#1565c0; }
 @media (min-width:500px) { .class-row label { width:180px;} button { width:auto; margin-right:10px;} }
+
+.settings-button { position:fixed; top:12px; right:12px; z-index:20; width:auto; margin:0; padding:8px 10px; font-size:20px; line-height:1; background:#fff; color:#1e88e5; box-shadow:0 3px 10px rgba(0,0,0,0.15); }
+.settings-button:hover { background:#f3f6ff; }
+.settings-modal { display:none; position:fixed; inset:0; z-index:100; background:rgba(0,0,0,0.35); padding:15px; overflow:auto; }
+.settings-dialog { max-width:520px; margin:40px auto; background:#fff; border-radius:14px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,0.2); }
+.settings-dialog h2 { margin-top:0; color:#1a237e; }
+.settings-class-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+.settings-class-row input { flex:1; width:auto; }
+.settings-remove { width:auto; margin:0; padding:7px 10px; background:#e53935; }
+.settings-remove:hover { background:#c62828; }
+.settings-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; flex-wrap:wrap; }
+.settings-actions button { width:auto; margin:0; }
+.settings-secondary { background:#757575; }
+.settings-secondary:hover { background:#616161; }
+.settings-message { min-height:20px; margin-top:10px; font-size:14px; font-weight:600; }
+@media (max-width:499px) { .settings-dialog { margin:20px auto; } .settings-actions button { width:100%; } }
 </style>
 </head>
 <body>
+
+<button class="settings-button" onclick="openSettings()" title="Paramètres" aria-label="Paramètres">⚙️</button>
 
 <h1>Répartition des études</h1>
 <div id="date"></div>
@@ -69,27 +88,82 @@ updateDate();
 
 <div id="result" class="result"></div>
 
+<div id="settingsModal" class="settings-modal" onclick="closeSettingsFromBackdrop(event)">
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <h2 id="settingsTitle">Paramétrage des classes</h2>
+        <p>Modifiez les noms, supprimez ou ajoutez des classes. L’ordre affiché ici sera conservé dans les répartitions.</p>
+        <div id="settingsClasses"></div>
+        <button type="button" onclick="addSettingsClass()">+ Ajouter une classe</button>
+        <div id="settingsMessage" class="settings-message"></div>
+        <div class="settings-actions">
+            <button type="button" class="settings-secondary" onclick="closeSettings()">Annuler</button>
+            <button type="button" id="saveSettingsButton" onclick="saveSettings()">Enregistrer</button>
+        </div>
+    </div>
+</div>
+
 <script>
-const classNames = [
+const defaultClassNames = [
     "CPA","CPB","CPC","CE1A","CE1B","CE1/CM1",
     "CE2A","CE2B","CE2C","CM1A","CM1B","CM2A","CM2B"
 ];
 
+let classNames = [...defaultClassNames];
 const classesDiv = document.getElementById("classes");
-classNames.forEach((name,i)=>{
-    classesDiv.innerHTML += `
-    <div class="class-row">
-        <label>${name}</label>
-        <input type="number" id="class${i}" min="0" value="0">
-        <select id="force${i}">
-            <option value="auto">Auto</option>
-            <option value="1">Étude 1</option>
-            <option value="2">Étude 2</option>
-            <option value="3">Étude 3</option>
-            <option value="4">Étude 4</option>
-        </select>
-    </div>`;
-});
+
+function renderClasses() {
+    classesDiv.innerHTML = "";
+    classNames.forEach((name,i)=>{
+        classesDiv.innerHTML += `
+        <div class="class-row">
+            <label>${escapeHtml(name)}</label>
+            <input type="number" id="class${i}" min="0" value="0">
+            <select id="force${i}">
+                <option value="auto">Auto</option>
+                <option value="1">Étude 1</option>
+                <option value="2">Étude 2</option>
+                <option value="3">Étude 3</option>
+                <option value="4">Étude 4</option>
+            </select>
+        </div>`;
+    });
+    refreshStudySelectors();
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+async function loadClassesConfig() {
+    try {
+        const rawUrl = `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/${GITHUB_CONFIG.branch}/config.json?t=${Date.now()}`;
+        const response = await fetch(rawUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const config = await response.json();
+        if (!Array.isArray(config.classes) || config.classes.length === 0) throw new Error("Configuration invalide");
+        classNames = config.classes.map(name => String(name).trim()).filter(Boolean);
+        if (classNames.length === 0) throw new Error("Configuration vide");
+    } catch (error) {
+        console.warn("Impossible de charger config.json depuis GitHub, utilisation de la configuration locale.", error);
+        try {
+            const response = await fetch(`config.json?t=${Date.now()}`, { cache: "no-store" });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const config = await response.json();
+            if (Array.isArray(config.classes) && config.classes.length > 0) {
+                classNames = config.classes.map(name => String(name).trim()).filter(Boolean);
+            }
+        } catch (localError) {
+            console.warn("Impossible de charger config.json local, utilisation de la liste par défaut.", localError);
+            classNames = [...defaultClassNames];
+        }
+    }
+    renderClasses();
+}
 
 function refreshStudySelectors() {
     const studyCount = parseInt(document.getElementById("studies").value);
@@ -116,7 +190,7 @@ function compute(){
           classSizes.push({name,size,forced}); totalEleves+=size;
       });
 
-      const order=["CPA","CPB","CPC","CE1A","CE1B","CE1/CM1","CE2A","CE2B","CE2C","CM1A","CM1B","CM2A","CM2B"];
+      const order=classNames;
       const grades=name=>{ const g=[]; if(name.startsWith("CP"))g.push("CP"); if(name.includes("CE1"))g.push("CE1"); if(name.includes("CE2"))g.push("CE2"); if(name.includes("CM1"))g.push("CM1"); if(name.includes("CM2"))g.push("CM2"); return g; };
       const active=classSizes.map((c,i)=>({...c,index:i})).filter(c=>c.size>0);
       const forcedMasks=Array(studyCount).fill(0), free=[];
@@ -188,8 +262,7 @@ function compute(){
     doc.text(`Total élèves : ${lastTotal}`,10,y); y+=7;
     doc.text(`Moyenne par étude : ${lastMoyenne.toFixed(1)}`,10,y); y+=10;
 
-    const order = ["CPA","CPB","CP/CE2","CE1A","CE1B","CE1/CM1","CE1/CM2",
-                   "CE2A","CE2B","CM1A","CM1B","CM2A","CM2B"];
+    const order = classNames;
 
     lastStudies.filter(study=>study.total>0).forEach((study,i)=>{
         doc.setFontSize(14); doc.text(`Étude ${i+1} — ${study.total} élèves`,10,y); y+=7;
@@ -204,6 +277,143 @@ function compute(){
 
     doc.save("repartition_etudes.pdf");
 }
+
+
+function openSettings() {
+    renderSettingsClasses();
+    document.getElementById("settingsMessage").textContent = "";
+    document.getElementById("settingsModal").style.display = "block";
+}
+
+function closeSettings() {
+    document.getElementById("settingsModal").style.display = "none";
+}
+
+function closeSettingsFromBackdrop(event) {
+    if (event.target.id === "settingsModal") closeSettings();
+}
+
+function renderSettingsClasses() {
+    const container = document.getElementById("settingsClasses");
+    container.innerHTML = "";
+    classNames.forEach(name => addSettingsClass(name));
+}
+
+function addSettingsClass(name = "") {
+    const container = document.getElementById("settingsClasses");
+    const row = document.createElement("div");
+    row.className = "settings-class-row";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "settings-class-name";
+    input.value = name;
+    input.placeholder = "Nom de la classe";
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "settings-remove";
+    removeButton.textContent = "Supprimer";
+    removeButton.onclick = () => row.remove();
+
+    row.append(input, removeButton);
+    container.appendChild(row);
+}
+
+function getSettingsClassNames() {
+    return [...document.querySelectorAll(".settings-class-name")]
+        .map(input => input.value.trim())
+        .filter(Boolean);
+}
+
+function textToBase64(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    bytes.forEach(byte => binary += String.fromCharCode(byte));
+    return btoa(binary);
+}
+
+async function saveSettings() {
+    const message = document.getElementById("settingsMessage");
+    const saveButton = document.getElementById("saveSettingsButton");
+    const newClassNames = getSettingsClassNames();
+
+    if (newClassNames.length === 0) {
+        message.textContent = "Ajoutez au moins une classe.";
+        return;
+    }
+
+    const normalized = newClassNames.map(name => name.toLocaleLowerCase("fr-FR"));
+    if (new Set(normalized).size !== normalized.length) {
+        message.textContent = "Deux classes ne peuvent pas avoir le même nom.";
+        return;
+    }
+
+    if (!GITHUB_CONFIG.token || GITHUB_CONFIG.token === "COLLE_TON_TOKEN_GITHUB_ICI") {
+        message.textContent = "Le token GitHub n'a pas encore été renseigné dans github-config.js.";
+        return;
+    }
+
+    saveButton.disabled = true;
+    message.textContent = "Enregistrement en cours…";
+
+    try {
+        const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/config.json`;
+        const headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": `Bearer ${GITHUB_CONFIG.token}`,
+            "X-GitHub-Api-Version": "2026-03-10"
+        };
+
+        const currentResponse = await fetch(`${apiUrl}?ref=${encodeURIComponent(GITHUB_CONFIG.branch)}`, { headers });
+        let currentSha = null;
+        if (currentResponse.ok) {
+            const currentFile = await currentResponse.json();
+            currentSha = currentFile.sha;
+        } else if (currentResponse.status !== 404) {
+            throw new Error(`Lecture GitHub impossible (${currentResponse.status})`);
+        }
+
+        const configContent = JSON.stringify({ classes: newClassNames }, null, 2) + "\n";
+        const body = {
+            message: "Mise à jour de la configuration des classes",
+            content: textToBase64(configContent),
+            branch: GITHUB_CONFIG.branch
+        };
+        if (currentSha) body.sha = currentSha;
+
+        const updateResponse = await fetch(apiUrl, {
+            method: "PUT",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
+
+        if (!updateResponse.ok) {
+            let details = "";
+            try {
+                const errorData = await updateResponse.json();
+                details = errorData.message ? ` : ${errorData.message}` : "";
+            } catch (_) {}
+            throw new Error(`Enregistrement GitHub impossible (${updateResponse.status})${details}`);
+        }
+
+        classNames = [...newClassNames];
+        renderClasses();
+        document.getElementById("result").innerHTML = "";
+        lastStudies = [];
+        lastTotal = 0;
+        lastMoyenne = 0;
+        message.textContent = "Configuration enregistrée sur GitHub.";
+        setTimeout(closeSettings, 900);
+    } catch (error) {
+        console.error(error);
+        message.textContent = `Erreur : ${error.message}`;
+    } finally {
+        saveButton.disabled = false;
+    }
+}
+
+loadClassesConfig();
 
 // Enregistrement service worker
 if ("serviceWorker" in navigator) {
